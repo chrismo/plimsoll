@@ -1,0 +1,6 @@
+# Real financial data never belongs in this repo. Keep it in a separate
+# private folder and point plim at it. Only made-up samples under testdata/.
+*.sup
+!**/testdata/**/*.sup
+
+/plim
