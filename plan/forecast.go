@@ -33,9 +33,10 @@ type Day struct {
 	Occurrences []Occurrence
 }
 
-// Forecast returns the running balance on each day an item lands, through
-// inclusive. Nothing filters on today: an unpaid past item counts.
-func Forecast(items []Item, through time.Time) ([]Day, error) {
+// forecast returns the running balance, seeded with start, on asOf and on
+// each day an item lands, through inclusive. Nothing filters on today: an
+// unpaid past item counts, even one dated before asOf.
+func forecast(start Cents, asOf time.Time, items []Item, through time.Time) ([]Day, error) {
 	var occs []Occurrence
 	for i := range items {
 		it := &items[i]
@@ -54,15 +55,27 @@ func Forecast(items []Item, through time.Time) ([]Day, error) {
 	slices.SortStableFunc(occs, func(a, b Occurrence) int { return a.Date.Compare(b.Date) })
 
 	var days []Day
-	var balance Cents
-	for _, o := range occs {
-		balance += o.Amount
-		if n := len(days); n > 0 && days[n-1].Date.Equal(o.Date) {
-			days[n-1].Balance = balance
-			days[n-1].Occurrences = append(days[n-1].Occurrences, o)
-		} else {
-			days = append(days, Day{Date: o.Date, Balance: balance, Occurrences: []Occurrence{o}})
+	dayOf := func(date time.Time) *Day {
+		if n := len(days); n == 0 || !days[n-1].Date.Equal(date) {
+			days = append(days, Day{Date: date})
 		}
+		return &days[len(days)-1]
+	}
+
+	balance := start
+	asOfAdded := false
+	for _, o := range occs {
+		if !asOfAdded && !o.Date.Before(asOf) {
+			dayOf(asOf).Balance = balance
+			asOfAdded = true
+		}
+		balance += o.Amount
+		d := dayOf(o.Date)
+		d.Balance = balance
+		d.Occurrences = append(d.Occurrences, o)
+	}
+	if !asOfAdded {
+		dayOf(asOf).Balance = balance
 	}
 	return days, nil
 }
