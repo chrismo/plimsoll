@@ -17,7 +17,7 @@ type Account struct {
 }
 
 // Ref names the item to pay or skip. A non-zero Expected must match the
-// item's next date, so a retried command can't apply twice.
+// item's next date; a zero one only accepts an item due by today.
 type Ref struct {
 	ID       string
 	Expected time.Time
@@ -61,6 +61,9 @@ func (a *Account) advance(today time.Time, refs []Ref, pay bool) error {
 		it := &next.Items[i]
 		if !ref.Expected.IsZero() && !it.Date.Equal(ref.Expected) {
 			return &OccurrenceMismatch{ID: it.ID, Expected: ref.Expected, Next: it.Date}
+		}
+		if ref.Expected.IsZero() && it.Date.After(today) {
+			return &NotDue{ID: it.ID, Next: it.Date}
 		}
 		if pay {
 			next.Balance += it.Amount
@@ -187,4 +190,13 @@ func (a *Account) Add(it Item, allowDuplicate bool) error {
 	}
 	a.Items = append(a.Items, it)
 	return nil
+}
+
+type NotDue struct {
+	ID   string
+	Next time.Time
+}
+
+func (e *NotDue) Error() string {
+	return fmt.Sprintf("item %q isn't due until %s", e.ID, e.Next.Format(time.DateOnly))
 }

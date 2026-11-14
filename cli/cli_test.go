@@ -258,6 +258,26 @@ func TestPayBadExpectedDate(t *testing.T) {
 	fails(t, plim(t, seed(t, checking()), "pay", "rent@tuesday"), 1, "tuesday")
 }
 
+func TestPayBareIDWhenDue(t *testing.T) {
+	dir := seed(t, checking())
+
+	ok(t, plim(t, dir, "pay", "rent"))
+
+	if a := load(t, dir)[0]; a.Balance != 150000 {
+		t.Errorf("saved balance %s", a.Balance)
+	}
+}
+
+func TestPayBareIDNotYetDueNamesTheDatedForm(t *testing.T) {
+	dir := seed(t, checking())
+
+	fails(t, plim(t, dir, "pay", "pay"), 1, "pay@2026-11-13")
+
+	if !reflect.DeepEqual(load(t, dir), []plan.Account{checking()}) {
+		t.Errorf("data changed after a refused pay")
+	}
+}
+
 func TestSkipLeavesBalance(t *testing.T) {
 	dir := seed(t, checking())
 

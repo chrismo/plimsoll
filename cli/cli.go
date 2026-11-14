@@ -48,7 +48,8 @@ commands:
   ahead [--through D]               daily balances and the low point
                                     (default through: 6 months out)
   pay ID[@EXPECTED-DATE] ...        apply items to the balance and advance
-                                    them; all or nothing
+                                    them; all or nothing. A bare ID only
+                                    acts on an item due by today.
   skip ID[@EXPECTED-DATE] ...       advance items without paying
   afford COST [--date D] [--floor N] [--through D]
                                     would a one-time cost keep the low
@@ -611,6 +612,9 @@ func advanceCmd(c *ctx, args []string, verb string) error {
 		err = a.Pay(c.Today, refs...)
 	} else {
 		err = a.Skip(c.Today, refs...)
+	}
+	if notDue := (*plan.NotDue)(nil); errors.As(err, &notDue) {
+		return fmt.Errorf("%w; to %s it early, name the date: %s@%s", err, verb, notDue.ID, day(notDue.Next))
 	}
 	if err != nil {
 		return err

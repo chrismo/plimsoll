@@ -103,6 +103,58 @@ func TestPayWithoutExpectedDateSkipsTheCheck(t *testing.T) {
 	assertDate(t, "p", find(t, a, "p").Date, day(6))
 }
 
+func TestPayWithoutExpectedDateRefusesItemNotYetDue(t *testing.T) {
+	a := newAccount(0, today, named("p", today, -5, "weekly"), named("rent", day(1), -1000, "monthly"))
+
+	err := a.Pay(today, Ref{ID: "p"}, Ref{ID: "rent"})
+
+	var notDue *NotDue
+	if !errors.As(err, &notDue) || notDue.ID != "rent" || !notDue.Next.Equal(day(1)) {
+		t.Fatalf("want NotDue for rent on %s, got %v", day(1).Format(time.DateOnly), err)
+	}
+	if want := newAccount(0, today, named("p", today, -5, "weekly"), named("rent", day(1), -1000, "monthly")); !reflect.DeepEqual(a, want) {
+		t.Errorf("account changed:\n got %+v\nwant %+v", *a, *want)
+	}
+}
+
+func TestPayWithoutExpectedDateTwiceRefusesTheSecond(t *testing.T) {
+	a := newAccount(0, today, named("p", today, -5, "weekly"))
+
+	if err := a.Pay(today, Ref{ID: "p"}); err != nil {
+		t.Fatal(err)
+	}
+	err := a.Pay(today, Ref{ID: "p"})
+
+	if !errors.As(err, new(*NotDue)) {
+		t.Fatalf("want NotDue, got %v", err)
+	}
+	if a.Balance != -5 {
+		t.Errorf("balance: got %d, want -5", a.Balance)
+	}
+}
+
+func TestSkipWithoutExpectedDateRefusesItemNotYetDue(t *testing.T) {
+	a := newAccount(0, today, named("rent", day(1), -1000, "monthly"))
+
+	err := a.Skip(today, Ref{ID: "rent"})
+
+	if !errors.As(err, new(*NotDue)) {
+		t.Fatalf("want NotDue, got %v", err)
+	}
+	assertDate(t, "rent", find(t, a, "rent").Date, day(1))
+}
+
+func TestPayWithExpectedDateCanPayEarly(t *testing.T) {
+	a := newAccount(0, today, named("rent", day(1), -1000, "monthly"))
+
+	if err := a.Pay(today, Ref{ID: "rent", Expected: day(1)}); err != nil {
+		t.Fatal(err)
+	}
+	if a.Balance != -1000 {
+		t.Errorf("balance: got %d, want -1000", a.Balance)
+	}
+}
+
 func TestPayUnknownItem(t *testing.T) {
 	a := newAccount(0, today, named("p", today, -1000, "weekly"))
 
@@ -143,7 +195,7 @@ func TestPayKeepsOriginSoUnevenSpacingHoldsItsRhythm(t *testing.T) {
 
 	_ = a.Pay(mon, Ref{ID: "t"})
 	assertDate(t, "first pay", find(t, a, "t").Date, time.Date(2013, 9, 6, 0, 0, 0, 0, time.UTC))
-	_ = a.Pay(mon, Ref{ID: "t"})
+	_ = a.Pay(mon, Ref{ID: "t", Expected: time.Date(2013, 9, 6, 0, 0, 0, 0, time.UTC)})
 	assertDate(t, "second pay", find(t, a, "t").Date, time.Date(2013, 9, 9, 0, 0, 0, 0, time.UTC))
 	assertDate(t, "origin", find(t, a, "t").Origin, mon)
 }
@@ -154,7 +206,7 @@ func TestPayHealsShortMonthDrift(t *testing.T) {
 
 	_ = a.Pay(jan31, Ref{ID: "rent"})
 	assertDate(t, "feb", find(t, a, "rent").Date, time.Date(2026, 2, 28, 0, 0, 0, 0, time.UTC))
-	_ = a.Pay(jan31, Ref{ID: "rent"})
+	_ = a.Pay(jan31, Ref{ID: "rent", Expected: time.Date(2026, 2, 28, 0, 0, 0, 0, time.UTC)})
 	assertDate(t, "mar", find(t, a, "rent").Date, time.Date(2026, 3, 31, 0, 0, 0, 0, time.UTC))
 }
 
@@ -163,13 +215,15 @@ func TestPayStopsAtEndDate(t *testing.T) {
 	w.End = day(21)
 	a := newAccount(0, today, w)
 
+	next := today
 	for _, want := range []time.Time{day(7), day(14), day(21)} {
-		if err := a.Pay(today, Ref{ID: "w"}); err != nil {
+		if err := a.Pay(today, Ref{ID: "w", Expected: next}); err != nil {
 			t.Fatal(err)
 		}
 		assertDate(t, "pay", find(t, a, "w").Date, want)
+		next = want
 	}
-	_ = a.Pay(today, Ref{ID: "w"})
+	_ = a.Pay(today, Ref{ID: "w", Expected: next})
 	if len(a.Items) != 0 {
 		t.Errorf("want item removed after its end date, got %+v", a.Items)
 	}
