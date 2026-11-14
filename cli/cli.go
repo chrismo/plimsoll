@@ -38,6 +38,10 @@ commands:
                                     plan an item; R is once (default),
                                     weekly, monthly, yearly, every 2 weeks,
                                     every 3 months, 2 times a month, ...
+  edit ID@EXPECTED-DATE [--desc S] [--amount N] [--date D] [--repeat R]
+       [--end D | --no-end] [--expected-amount N]
+                                    change an item; --date moves its next
+                                    occurrence and later ones follow
   ahead [--through D]               daily balances and the low point
                                     (default through: 6 months out)
   pay ID[@EXPECTED-DATE] ...        apply items to the balance and advance
@@ -61,6 +65,7 @@ var commands = map[string]command{
 	"open":     openCmd,
 	"balance":  balanceCmd,
 	"add":      addCmd,
+	"edit":     editCmd,
 	"ahead":    aheadCmd,
 	"pay":      func(c *ctx, args []string) error { return advanceCmd(c, args, "pay") },
 	"skip":     func(c *ctx, args []string) error { return advanceCmd(c, args, "skip") },
@@ -167,6 +172,18 @@ func (c *ctx) dateOr(s string, fallback time.Time) (time.Time, error) {
 }
 
 func day(t time.Time) string { return t.Format(time.DateOnly) }
+
+func parseRef(s string) (plan.Ref, error) {
+	id, expected, hasDate := strings.Cut(s, "@")
+	ref := plan.Ref{ID: id}
+	if hasDate {
+		var err error
+		if ref.Expected, err = time.Parse(time.DateOnly, expected); err != nil {
+			return ref, fmt.Errorf("%s: invalid expected date %q: want YYYY-MM-DD", s, expected)
+		}
+	}
+	return ref, nil
+}
 
 type accountJSON struct {
 	Name    string `json:"name"`
@@ -353,14 +370,113 @@ func addCmd(c *ctx, args []string) error {
 	if err := store.Save(c.dir, accounts); err != nil {
 		return err
 	}
+	return c.outputItem("added", it)
+}
+
+func (c *ctx) outputItem(verb string, it plan.Item) error {
 	out := itemJSON{ID: it.ID, Description: it.Description, Amount: it.Amount.String(), Date: day(it.Date), Repeat: it.Recurrence}
-	if !end.IsZero() {
-		e := day(end)
+	if !it.End.IsZero() {
+		e := day(it.End)
 		out.End = &e
 	}
 	return c.output(map[string]any{"item": out}, func(w io.Writer) {
-		fmt.Fprintf(w, "added %s: %s %s on %s, %s\n", out.ID, out.Description, out.Amount, out.Date, out.Repeat)
+		fmt.Fprintf(w, "%s %s: %s %s on %s, %s", verb, out.ID, out.Description, out.Amount, out.Date, out.Repeat)
+		if out.End != nil {
+			fmt.Fprintf(w, ", until %s", *out.End)
+		}
+		fmt.Fprintln(w)
 	})
+}
+
+func editCmd(c *ctx, args []string) error {
+	fs := c.flags()
+	account := fs.String("account", "", "")
+	desc := fs.String("desc", "", "")
+	amount := fs.String("amount", "", "")
+	dateFlag := fs.String("date", "", "")
+	repeat := fs.String("repeat", "", "")
+	endFlag := fs.String("end", "", "")
+	noEnd := fs.Bool("no-end", false, "")
+	expectedAmount := fs.String("expected-amount", "", "")
+	positional, err := parse(fs, args)
+	if err != nil {
+		return err
+	}
+	if len(positional) != 1 {
+		return usagef("name one item, as ID@EXPECTED-DATE")
+	}
+	ref, err := parseRef(positional[0])
+	if err != nil {
+		return err
+	}
+	if ref.Expected.IsZero() {
+		return usagef("name the item as ID@EXPECTED-DATE; edit always checks the next date")
+	}
+
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+	if set["end"] && set["no-end"] {
+		return usagef("give --end or --no-end, not both")
+	}
+	var ch plan.Change
+	if set["desc"] {
+		ch.Description = desc
+	}
+	if set["amount"] {
+		cents, err := plan.ParseCents(*amount)
+		if err != nil {
+			return err
+		}
+		ch.Amount = &cents
+	}
+	if set["date"] {
+		d, err := c.dateOr(*dateFlag, time.Time{})
+		if err != nil {
+			return err
+		}
+		ch.Date = &d
+	}
+	if set["repeat"] {
+		ch.Recurrence = repeat
+	}
+	if set["end"] {
+		d, err := c.dateOr(*endFlag, time.Time{})
+		if err != nil {
+			return err
+		}
+		ch.End = &d
+	}
+	if *noEnd {
+		ch.End = &time.Time{}
+	}
+	if ch == (plan.Change{}) {
+		return usagef("nothing to change")
+	}
+	var guard *plan.Cents
+	if set["expected-amount"] {
+		cents, err := plan.ParseCents(*expectedAmount)
+		if err != nil {
+			return err
+		}
+		guard = &cents
+	}
+
+	accounts, err := c.load()
+	if err != nil {
+		return err
+	}
+	a, err := c.pick(accounts, *account)
+	if err != nil {
+		return err
+	}
+	it, err := a.Edit(ref, guard, ch)
+	if err != nil {
+		return err
+	}
+	if err := store.Save(c.dir, accounts); err != nil {
+		return err
+	}
+	return c.outputItem("edited", it)
 }
 
 type rowJSON struct {
@@ -465,16 +581,13 @@ func advanceCmd(c *ctx, args []string, verb string) error {
 	var refs []plan.Ref
 	var ids []string
 	for _, p := range positional {
-		id, expected, hasDate := strings.Cut(p, "@")
-		ref := plan.Ref{ID: id}
-		if hasDate {
-			if ref.Expected, err = time.Parse(time.DateOnly, expected); err != nil {
-				return fmt.Errorf("%s: invalid expected date %q: want YYYY-MM-DD", p, expected)
-			}
+		ref, err := parseRef(p)
+		if err != nil {
+			return err
 		}
 		refs = append(refs, ref)
-		if !slices.Contains(ids, id) {
-			ids = append(ids, id)
+		if !slices.Contains(ids, ref.ID) {
+			ids = append(ids, ref.ID)
 		}
 	}
 	accounts, err := c.load()

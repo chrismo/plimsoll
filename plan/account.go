@@ -98,3 +98,74 @@ func (a *Account) moveAsOf(today time.Time) {
 		a.AsOf = today
 	}
 }
+
+var (
+	ErrExpectedDate = errors.New("expected date required")
+	ErrNoChange     = errors.New("nothing to change")
+)
+
+type AmountMismatch struct {
+	ID       string
+	Expected Cents
+	Current  Cents
+}
+
+func (e *AmountMismatch) Error() string {
+	return fmt.Sprintf("item %q amount is %s, not %s", e.ID, e.Current, e.Expected)
+}
+
+// Change holds the fields an edit sets; nil leaves a field alone. End
+// pointing at the zero time clears the end date.
+type Change struct {
+	Description *string
+	Amount      *Cents
+	Date        *time.Time
+	Recurrence  *string
+	End         *time.Time
+}
+
+// Edit changes one item, guarded by its next date (required) and,
+// optionally, its current amount. Moving the date resets the origin, as
+// in Cashew, so later occurrences recur from the new date.
+func (a *Account) Edit(ref Ref, expectedAmount *Cents, ch Change) (Item, error) {
+	if ref.Expected.IsZero() {
+		return Item{}, ErrExpectedDate
+	}
+	if ch == (Change{}) {
+		return Item{}, ErrNoChange
+	}
+	i := slices.IndexFunc(a.Items, func(it Item) bool { return it.ID == ref.ID })
+	if i < 0 {
+		return Item{}, fmt.Errorf("%w: %q", ErrNotFound, ref.ID)
+	}
+	it := a.Items[i]
+	if !it.Date.Equal(ref.Expected) {
+		return Item{}, &OccurrenceMismatch{ID: it.ID, Expected: ref.Expected, Next: it.Date}
+	}
+	if expectedAmount != nil && *expectedAmount != it.Amount {
+		return Item{}, &AmountMismatch{ID: it.ID, Expected: *expectedAmount, Current: it.Amount}
+	}
+	if ch.Description != nil {
+		it.Description = *ch.Description
+	}
+	if ch.Amount != nil {
+		it.Amount = *ch.Amount
+	}
+	if ch.Date != nil {
+		it.Date, it.Origin = *ch.Date, *ch.Date
+	}
+	if ch.Recurrence != nil {
+		it.Recurrence = *ch.Recurrence
+	}
+	if ch.End != nil {
+		it.End = *ch.End
+	}
+	if !it.End.IsZero() && it.End.Before(it.Date) {
+		return Item{}, fmt.Errorf("item %q: end %s is before date %s", it.ID, it.End.Format(time.DateOnly), it.Date.Format(time.DateOnly))
+	}
+	if _, err := recur.New(it.Date, it.Recurrence, recur.Options{}); err != nil {
+		return Item{}, fmt.Errorf("item %q: %w", it.ID, err)
+	}
+	a.Items[i] = it
+	return it, nil
+}

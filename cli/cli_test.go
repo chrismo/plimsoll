@@ -295,3 +295,57 @@ func TestAffordBelowFloor(t *testing.T) {
 func TestUnknownCommand(t *testing.T) {
 	fails(t, plim(t, t.TempDir(), "frobnicate"), 2, "frobnicate")
 }
+
+func TestEditChangesAmountWithGuards(t *testing.T) {
+	dir := seed(t, checking())
+
+	r := ok(t, plim(t, dir, "edit", "rent@2026-11-02", "--amount", "-1100", "--expected-amount", "-1000", "--json"))
+
+	assertJSON(t, r.out, `{"item":{"id":"rent","description":"Rent","amount":"-1100.00",
+		"date":"2026-11-02","repeat":"monthly","end":null}}`)
+	if got := load(t, dir)[0].Items[0].Amount; got != -110000 {
+		t.Errorf("saved amount %s", got)
+	}
+}
+
+func TestEditSetsAndClearsEnd(t *testing.T) {
+	dir := seed(t, checking())
+
+	ok(t, plim(t, dir, "edit", "coffee@2026-11-03", "--end", "2026-12-31", "--desc", "Latte"))
+	it := load(t, dir)[0].Items[1]
+	if it.Description != "Latte" || !it.End.Equal(date("2026-12-31")) {
+		t.Errorf("got %+v", it)
+	}
+
+	ok(t, plim(t, dir, "edit", "coffee@2026-11-03", "--no-end"))
+	if it := load(t, dir)[0].Items[1]; !it.End.IsZero() {
+		t.Errorf("end not cleared: %+v", it)
+	}
+}
+
+func TestEditMovesDateAndRepeat(t *testing.T) {
+	dir := seed(t, checking())
+
+	ok(t, plim(t, dir, "edit", "pay@2026-11-13", "--date", "2026-11-14", "--repeat", "2 times a month"))
+
+	it := load(t, dir)[0].Items[2]
+	if !it.Date.Equal(date("2026-11-14")) || !it.Origin.Equal(date("2026-11-14")) || it.Recurrence != "2 times a month" {
+		t.Errorf("got %+v", it)
+	}
+}
+
+func TestEditRefusals(t *testing.T) {
+	dir := seed(t, checking())
+
+	fails(t, plim(t, dir, "edit", "rent", "--amount", "1"), 2, "ID@EXPECTED-DATE")
+	fails(t, plim(t, dir, "edit", "rent@2026-11-02"), 2, "nothing to change")
+	fails(t, plim(t, dir, "edit", "rent@2026-11-02", "--end", "2026-12-31", "--no-end"), 2, "--no-end")
+	fails(t, plim(t, dir, "edit", "rent@2026-11-02", "rent@2026-11-02", "--amount", "1"), 2, "one item")
+	fails(t, plim(t, dir, "edit", "rent@2026-11-02", "--amount", "1", "--expected-amount", "-999"), 1, "-1000.00")
+	fails(t, plim(t, dir, "edit", "rent@2026-12-02", "--amount", "1"), 1, "2026-11-02")
+	fails(t, plim(t, dir, "edit", "rent@2026-11-02", "--repeat", "biweekly"), 1, "biweekly")
+
+	if !reflect.DeepEqual(load(t, dir), []plan.Account{checking()}) {
+		t.Errorf("data changed after refused edits")
+	}
+}

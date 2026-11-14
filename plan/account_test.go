@@ -3,6 +3,7 @@ package plan
 import (
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -231,4 +232,112 @@ func TestAsOfStaysWhenAnItemPredatesIt(t *testing.T) {
 	_ = a.Pay(today, Ref{ID: "p"})
 
 	assertDate(t, "as of", a.AsOf, day(-1))
+}
+
+func ptr[T any](v T) *T { return &v }
+
+func editable() *Account {
+	return newAccount(500, day(-1),
+		Item{ID: "rent", Description: "Rent", Date: day(1), Origin: day(-30), Amount: -100000, Recurrence: "monthly"},
+		named("gym", day(3), -2500, "weekly"),
+	)
+}
+
+func TestEditChangesOnlyGivenFields(t *testing.T) {
+	a := editable()
+
+	got, err := a.Edit(Ref{ID: "rent", Expected: day(1)}, ptr(Cents(-100000)), Change{Amount: ptr(Cents(-110000))})
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Item{ID: "rent", Description: "Rent", Date: day(1), Origin: day(-30), Amount: -110000, Recurrence: "monthly"}
+	if !reflect.DeepEqual(got, want) || !reflect.DeepEqual(find(t, a, "rent"), want) {
+		t.Errorf("got %+v\nwant %+v", got, want)
+	}
+	if a.Balance != 500 {
+		t.Errorf("edit changed the balance to %d", a.Balance)
+	}
+}
+
+func TestEditMovingDateResetsOrigin(t *testing.T) {
+	a := editable()
+
+	got, err := a.Edit(Ref{ID: "rent", Expected: day(1)}, nil, Change{Date: ptr(day(5))})
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertDate(t, "date", got.Date, day(5))
+	assertDate(t, "origin", got.Origin, day(5))
+}
+
+func TestEditOtherFieldsKeepOrigin(t *testing.T) {
+	a := editable()
+
+	got, err := a.Edit(Ref{ID: "rent", Expected: day(1)}, nil,
+		Change{Description: ptr("Mortgage"), Recurrence: ptr("every 2 weeks"), End: ptr(day(90))})
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Description != "Mortgage" || got.Recurrence != "every 2 weeks" {
+		t.Errorf("got %+v", got)
+	}
+	assertDate(t, "end", got.End, day(90))
+	assertDate(t, "origin", got.Origin, day(-30))
+}
+
+func TestEditZeroEndClearsIt(t *testing.T) {
+	a := editable()
+	a.Items[0].End = day(90)
+
+	got, err := a.Edit(Ref{ID: "rent", Expected: day(1)}, nil, Change{End: ptr(time.Time{})})
+
+	if err != nil || !got.End.IsZero() {
+		t.Errorf("got %+v, %v", got, err)
+	}
+}
+
+func TestEditRefusesAndChangesNothing(t *testing.T) {
+	for name, tc := range map[string]struct {
+		ref            Ref
+		expectedAmount *Cents
+		change         Change
+		check          func(error) bool
+	}{
+		"no expected date": {Ref{ID: "rent"}, nil, Change{Amount: ptr(Cents(1))},
+			func(err error) bool { return errors.Is(err, ErrExpectedDate) }},
+		"date mismatch": {Ref{ID: "rent", Expected: day(2)}, nil, Change{Amount: ptr(Cents(1))},
+			func(err error) bool { var m *OccurrenceMismatch; return errors.As(err, &m) }},
+		"amount mismatch": {Ref{ID: "rent", Expected: day(1)}, ptr(Cents(-99999)), Change{Amount: ptr(Cents(1))},
+			func(err error) bool {
+				var m *AmountMismatch
+				return errors.As(err, &m) && m.ID == "rent" && m.Expected == -99999 && m.Current == -100000
+			}},
+		"unknown id": {Ref{ID: "nope", Expected: day(1)}, nil, Change{Amount: ptr(Cents(1))},
+			func(err error) bool { return errors.Is(err, ErrNotFound) }},
+		"nothing to change": {Ref{ID: "rent", Expected: day(1)}, nil, Change{},
+			func(err error) bool { return errors.Is(err, ErrNoChange) }},
+		"bad recurrence": {Ref{ID: "rent", Expected: day(1)}, nil, Change{Recurrence: ptr("biweekly")},
+			func(err error) bool { return err != nil && strings.Contains(err.Error(), "biweekly") }},
+		"end before date": {Ref{ID: "rent", Expected: day(1)}, nil, Change{End: ptr(day(0))},
+			func(err error) bool { return err != nil && strings.Contains(err.Error(), "end") }},
+		"date moved past end": {Ref{ID: "gym", Expected: day(3)}, nil, Change{Date: ptr(day(100)), End: ptr(day(50))},
+			func(err error) bool { return err != nil && strings.Contains(err.Error(), "end") }},
+	} {
+		t.Run(name, func(t *testing.T) {
+			a := editable()
+			before := editable()
+
+			_, err := a.Edit(tc.ref, tc.expectedAmount, tc.change)
+
+			if !tc.check(err) {
+				t.Errorf("unexpected error: %v", err)
+			}
+			if !reflect.DeepEqual(a, before) {
+				t.Errorf("account changed:\n got %+v\nwant %+v", a, before)
+			}
+		})
+	}
 }
