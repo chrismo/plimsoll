@@ -169,3 +169,22 @@ func (a *Account) Edit(ref Ref, expectedAmount *Cents, ch Change) (Item, error) 
 	a.Items[i] = it
 	return it, nil
 }
+
+type Duplicate struct{ ID string }
+
+func (e *Duplicate) Error() string {
+	return fmt.Sprintf("same date, amount, description and repeat as item %q", e.ID)
+}
+
+// Add refuses an exact repeat of an existing item unless allowDuplicate.
+func (a *Account) Add(it Item, allowDuplicate bool) error {
+	if !allowDuplicate {
+		for _, x := range a.Items {
+			if x.Date.Equal(it.Date) && x.Amount == it.Amount && x.Description == it.Description && x.Recurrence == it.Recurrence {
+				return &Duplicate{ID: x.ID}
+			}
+		}
+	}
+	a.Items = append(a.Items, it)
+	return nil
+}

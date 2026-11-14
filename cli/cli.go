@@ -35,9 +35,12 @@ commands:
                                     create an account
   balance --amount N [--date D]     set the current balance
   add --desc S --amount N --date D [--repeat R] [--end D] [--id ID]
+      [--allow-duplicate]
                                     plan an item; R is once (default),
                                     weekly, monthly, yearly, every 2 weeks,
                                     every 3 months, 2 times a month, ...
+                                    An exact repeat of an existing item is
+                                    refused unless --allow-duplicate.
   edit ID@EXPECTED-DATE [--desc S] [--amount N] [--date D] [--repeat R]
        [--end D | --no-end] [--expected-amount N]
                                     change an item; --date moves its next
@@ -316,6 +319,7 @@ func addCmd(c *ctx, args []string) error {
 	repeat := fs.String("repeat", "once", "")
 	endFlag := fs.String("end", "", "")
 	id := fs.String("id", "", "")
+	allowDuplicate := fs.Bool("allow-duplicate", false, "")
 	if _, err := parse(fs, args); err != nil {
 		return err
 	}
@@ -366,7 +370,12 @@ func addCmd(c *ctx, args []string) error {
 		}
 	}
 	it := plan.Item{ID: *id, Description: *desc, Amount: cents, Date: date, Origin: date, End: end, Recurrence: *repeat}
-	a.Items = append(a.Items, it)
+	if err := a.Add(it, *allowDuplicate); err != nil {
+		if errors.As(err, new(*plan.Duplicate)) {
+			return fmt.Errorf("%w; pass --allow-duplicate to add it anyway", err)
+		}
+		return err
+	}
 	if err := store.Save(c.dir, accounts); err != nil {
 		return err
 	}

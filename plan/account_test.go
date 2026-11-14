@@ -341,3 +341,52 @@ func TestEditRefusesAndChangesNothing(t *testing.T) {
 		})
 	}
 }
+
+func TestAddAppends(t *testing.T) {
+	a := editable()
+	gift := named("gift", day(9), -5000, "once")
+
+	if err := a.Add(gift, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := a.Items[len(a.Items)-1]; !reflect.DeepEqual(got, gift) {
+		t.Errorf("got %+v", got)
+	}
+}
+
+// Same date, amount, description and recurrence as an existing item means
+// a retried add, as in Cashew. The end date doesn't count.
+func TestAddRefusesDuplicate(t *testing.T) {
+	a := editable()
+	again := Item{ID: "rent-2", Description: "Rent", Date: day(1), Amount: -100000, Recurrence: "monthly", End: day(99)}
+
+	err := a.Add(again, false)
+
+	var dup *Duplicate
+	if !errors.As(err, &dup) || dup.ID != "rent" {
+		t.Fatalf("want Duplicate of rent, got %v", err)
+	}
+	if len(a.Items) != 2 {
+		t.Errorf("duplicate was added: %+v", a.Items)
+	}
+
+	if err := a.Add(again, true); err != nil || len(a.Items) != 3 {
+		t.Errorf("allowDuplicate should add it: %v, %d items", err, len(a.Items))
+	}
+}
+
+func TestAddAnyDifferenceIsNotDuplicate(t *testing.T) {
+	base := Item{ID: "x", Description: "Rent", Date: day(1), Amount: -100000, Recurrence: "monthly"}
+	for name, change := range map[string]func(*Item){
+		"date":        func(it *Item) { it.Date = day(2) },
+		"amount":      func(it *Item) { it.Amount = -1 },
+		"description": func(it *Item) { it.Description = "Rent (garage)" },
+		"recurrence":  func(it *Item) { it.Recurrence = "once" },
+	} {
+		it := base
+		change(&it)
+		if err := editable().Add(it, false); err != nil {
+			t.Errorf("%s differs, want added, got %v", name, err)
+		}
+	}
+}

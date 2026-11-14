@@ -349,3 +349,18 @@ func TestEditRefusals(t *testing.T) {
 		t.Errorf("data changed after refused edits")
 	}
 }
+
+func TestAddRefusesDuplicateUnlessAllowed(t *testing.T) {
+	dir := seed(t, checking())
+	rent := []string{"add", "--desc", "Rent", "--amount", "-1000", "--date", "2026-11-02", "--repeat", "monthly"}
+
+	fails(t, plim(t, dir, rent...), 1, `"rent"`)
+	if n := len(load(t, dir)[0].Items); n != 3 {
+		t.Fatalf("duplicate was saved: %d items", n)
+	}
+
+	r := ok(t, plim(t, dir, append(rent, "--allow-duplicate")...))
+	if !strings.Contains(r.out, "rent-2") || len(load(t, dir)[0].Items) != 4 {
+		t.Errorf("want rent-2 added, got %s", r.out)
+	}
+}
