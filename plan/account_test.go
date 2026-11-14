@@ -43,7 +43,6 @@ func TestPayAdjustsBalanceAndAdvancesEachItem(t *testing.T) {
 	)
 
 	err := a.Pay(today, Ref{ID: "rent", Expected: day(-2)}, Ref{ID: "pay", Expected: day(-1)})
-
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +58,6 @@ func TestPayConsecutiveOccurrencesOfOneItem(t *testing.T) {
 	a := newAccount(0, day(-8), named("w", day(-8), -1000, "weekly"))
 
 	err := a.Pay(today, Ref{ID: "w", Expected: day(-8)}, Ref{ID: "w", Expected: day(-1)})
-
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -301,7 +299,6 @@ func TestEditChangesOnlyGivenFields(t *testing.T) {
 	a := editable()
 
 	got, err := a.Edit(Ref{ID: "rent", Expected: day(1)}, ptr(Cents(-100000)), Change{Amount: ptr(Cents(-110000))})
-
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -318,7 +315,6 @@ func TestEditMovingDateResetsOrigin(t *testing.T) {
 	a := editable()
 
 	got, err := a.Edit(Ref{ID: "rent", Expected: day(1)}, nil, Change{Date: ptr(day(5))})
-
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -331,7 +327,6 @@ func TestEditOtherFieldsKeepOrigin(t *testing.T) {
 
 	got, err := a.Edit(Ref{ID: "rent", Expected: day(1)}, nil,
 		Change{Description: ptr("Mortgage"), Recurrence: ptr("every 2 weeks"), End: ptr(day(90))})
-
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -360,25 +355,57 @@ func TestEditRefusesAndChangesNothing(t *testing.T) {
 		change         Change
 		check          func(error) bool
 	}{
-		"no expected date": {Ref{ID: "rent"}, nil, Change{Amount: ptr(Cents(1))},
-			func(err error) bool { return errors.Is(err, ErrExpectedDate) }},
-		"date mismatch": {Ref{ID: "rent", Expected: day(2)}, nil, Change{Amount: ptr(Cents(1))},
-			func(err error) bool { var m *OccurrenceMismatch; return errors.As(err, &m) }},
-		"amount mismatch": {Ref{ID: "rent", Expected: day(1)}, ptr(Cents(-99999)), Change{Amount: ptr(Cents(1))},
+		"no expected date": {
+			Ref{ID: "rent"},
+			nil,
+			Change{Amount: ptr(Cents(1))},
+			func(err error) bool { return errors.Is(err, ErrExpectedDate) },
+		},
+		"date mismatch": {
+			Ref{ID: "rent", Expected: day(2)},
+			nil,
+			Change{Amount: ptr(Cents(1))},
+			func(err error) bool { var m *OccurrenceMismatch; return errors.As(err, &m) },
+		},
+		"amount mismatch": {
+			Ref{ID: "rent", Expected: day(1)},
+			ptr(Cents(-99999)),
+			Change{Amount: ptr(Cents(1))},
 			func(err error) bool {
 				var m *AmountMismatch
 				return errors.As(err, &m) && m.ID == "rent" && m.Expected == -99999 && m.Current == -100000
-			}},
-		"unknown id": {Ref{ID: "nope", Expected: day(1)}, nil, Change{Amount: ptr(Cents(1))},
-			func(err error) bool { return errors.Is(err, ErrNotFound) }},
-		"nothing to change": {Ref{ID: "rent", Expected: day(1)}, nil, Change{},
-			func(err error) bool { return errors.Is(err, ErrNoChange) }},
-		"bad recurrence": {Ref{ID: "rent", Expected: day(1)}, nil, Change{Recurrence: ptr("biweekly")},
-			func(err error) bool { return err != nil && strings.Contains(err.Error(), "biweekly") }},
-		"end before date": {Ref{ID: "rent", Expected: day(1)}, nil, Change{End: ptr(day(0))},
-			func(err error) bool { return err != nil && strings.Contains(err.Error(), "end") }},
-		"date moved past end": {Ref{ID: "gym", Expected: day(3)}, nil, Change{Date: ptr(day(100)), End: ptr(day(50))},
-			func(err error) bool { return err != nil && strings.Contains(err.Error(), "end") }},
+			},
+		},
+		"unknown id": {
+			Ref{ID: "nope", Expected: day(1)},
+			nil,
+			Change{Amount: ptr(Cents(1))},
+			func(err error) bool { return errors.Is(err, ErrNotFound) },
+		},
+		"nothing to change": {
+			Ref{ID: "rent", Expected: day(1)},
+			nil,
+			Change{},
+			func(err error) bool { return errors.Is(err, ErrNoChange) },
+		},
+		"bad recurrence": {
+			Ref{ID: "rent", Expected: day(1)},
+			nil,
+			Change{Recurrence: ptr("biweekly")},
+			func(err error) bool { return err != nil && strings.Contains(err.Error(), "biweekly") },
+		},
+		"end before date": {
+			Ref{ID: "rent", Expected: day(1)},
+			nil,
+			Change{End: ptr(day(0))},
+			func(err error) bool { return err != nil && strings.Contains(err.Error(), "end") },
+		},
+		"date moved past end": {
+			Ref{ID: "gym", Expected: day(3)},
+			nil,
+			Change{Date: ptr(day(100)), End: ptr(day(50))},
+			func(err error) bool { return err != nil && strings.Contains(err.Error(), "end") },
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			a := editable()

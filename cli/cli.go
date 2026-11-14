@@ -2,6 +2,7 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -137,37 +138,51 @@ func (c *ctx) load() ([]plan.Account, error) {
 	return store.Load(c.dir)
 }
 
-func (c *ctx) pick(accounts []plan.Account, name string) (*plan.Account, error) {
+// Saving the returned slice saves changes made through the pointer.
+func (c *ctx) pick(name string) ([]plan.Account, *plan.Account, error) {
+	accounts, err := c.load()
+	if err != nil {
+		return nil, nil, err
+	}
 	if len(accounts) == 0 {
-		return nil, errors.New("no accounts yet; create one with: plim open NAME")
+		return nil, nil, errors.New("no accounts yet; create one with: plim open NAME")
 	}
 	var names []string
 	for i := range accounts {
 		if accounts[i].Name == name || (name == "" && len(accounts) == 1) {
-			return &accounts[i], nil
+			return accounts, &accounts[i], nil
 		}
 		names = append(names, accounts[i].Name)
 	}
 	if name == "" {
-		return nil, fmt.Errorf("choose an account with --account: %s", strings.Join(names, ", "))
+		return nil, nil, fmt.Errorf("choose an account with --account: %s", strings.Join(names, ", "))
 	}
-	return nil, fmt.Errorf("no account %q; have: %s", name, strings.Join(names, ", "))
+	return nil, nil, fmt.Errorf("no account %q; have: %s", name, strings.Join(names, ", "))
 }
 
 func (c *ctx) output(v any, text func(w io.Writer)) error {
-	if !c.json {
-		text(c.Stdout)
-		return nil
+	var buf bytes.Buffer
+	if c.json {
+		enc := json.NewEncoder(&buf)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(v); err != nil {
+			return err
+		}
+	} else {
+		text(&buf)
 	}
-	enc := json.NewEncoder(c.Stdout)
-	enc.SetIndent("", "  ")
-	return enc.Encode(v)
+	_, err := c.Stdout.Write(buf.Bytes())
+	return err
 }
 
 func (c *ctx) dateOr(s string, fallback time.Time) (time.Time, error) {
 	if s == "" {
 		return fallback, nil
 	}
+	return parseDate(s)
+}
+
+func parseDate(s string) (time.Time, error) {
 	d, err := time.Parse(time.DateOnly, s)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("invalid date %q: want YYYY-MM-DD", s)
@@ -271,11 +286,7 @@ func balanceCmd(c *ctx, args []string) error {
 	if err != nil {
 		return err
 	}
-	accounts, err := c.load()
-	if err != nil {
-		return err
-	}
-	a, err := c.pick(accounts, *account)
+	accounts, a, err := c.pick(*account)
 	if err != nil {
 		return err
 	}
@@ -309,6 +320,26 @@ func slug(s string) string {
 		return "item"
 	}
 	return s
+}
+
+func newID(accounts []plan.Account, requested, desc string) (string, error) {
+	taken := map[string]bool{}
+	for _, acct := range accounts {
+		for _, it := range acct.Items {
+			taken[it.ID] = true
+		}
+	}
+	if requested != "" {
+		if taken[requested] {
+			return "", fmt.Errorf("id %q already exists", requested)
+		}
+		return requested, nil
+	}
+	id := slug(desc)
+	for n := 2; taken[id]; n++ {
+		id = fmt.Sprintf("%s-%d", slug(desc), n)
+	}
+	return id, nil
 }
 
 func addCmd(c *ctx, args []string) error {
@@ -347,30 +378,15 @@ func addCmd(c *ctx, args []string) error {
 	if _, err := recur.New(date, *repeat, recur.Options{}); err != nil {
 		return err
 	}
-	accounts, err := c.load()
+	accounts, a, err := c.pick(*account)
 	if err != nil {
 		return err
 	}
-	a, err := c.pick(accounts, *account)
+	itemID, err := newID(accounts, *id, *desc)
 	if err != nil {
 		return err
 	}
-	taken := map[string]bool{}
-	for _, acct := range accounts {
-		for _, it := range acct.Items {
-			taken[it.ID] = true
-		}
-	}
-	if *id != "" && taken[*id] {
-		return fmt.Errorf("id %q already exists", *id)
-	}
-	if *id == "" {
-		*id = slug(*desc)
-		for n := 2; taken[*id]; n++ {
-			*id = fmt.Sprintf("%s-%d", slug(*desc), n)
-		}
-	}
-	it := plan.Item{ID: *id, Description: *desc, Amount: cents, Date: date, Origin: date, End: end, Recurrence: *repeat}
+	it := plan.Item{ID: itemID, Description: *desc, Amount: cents, Date: date, Origin: date, End: end, Recurrence: *repeat}
 	if err := a.Add(it, *allowDuplicate); err != nil {
 		if errors.As(err, new(*plan.Duplicate)) {
 			return fmt.Errorf("%w; pass --allow-duplicate to add it anyway", err)
@@ -398,6 +414,44 @@ func (c *ctx) outputItem(verb string, it plan.Item) error {
 	})
 }
 
+func optCents(set bool, s string) (*plan.Cents, error) {
+	if !set {
+		return nil, nil
+	}
+	cents, err := plan.ParseCents(s)
+	return &cents, err
+}
+
+func optDate(set bool, s string) (*time.Time, error) {
+	if !set {
+		return nil, nil
+	}
+	d, err := parseDate(s)
+	return &d, err
+}
+
+// optEnd points at the zero time for --no-end, which clears the end date.
+func optEnd(set bool, s string, noEnd bool) (*time.Time, error) {
+	if set && noEnd {
+		return nil, usagef("give --end or --no-end, not both")
+	}
+	if noEnd {
+		return &time.Time{}, nil
+	}
+	return optDate(set, s)
+}
+
+func editRef(positional []string) (plan.Ref, error) {
+	if len(positional) != 1 {
+		return plan.Ref{}, usagef("name one item, as ID@EXPECTED-DATE")
+	}
+	ref, err := parseRef(positional[0])
+	if err == nil && ref.Expected.IsZero() {
+		err = usagef("name the item as ID@EXPECTED-DATE; edit always checks the next date")
+	}
+	return ref, err
+}
+
 func editCmd(c *ctx, args []string) error {
 	fs := c.flags()
 	account := fs.String("account", "", "")
@@ -412,70 +466,38 @@ func editCmd(c *ctx, args []string) error {
 	if err != nil {
 		return err
 	}
-	if len(positional) != 1 {
-		return usagef("name one item, as ID@EXPECTED-DATE")
-	}
-	ref, err := parseRef(positional[0])
+	ref, err := editRef(positional)
 	if err != nil {
 		return err
-	}
-	if ref.Expected.IsZero() {
-		return usagef("name the item as ID@EXPECTED-DATE; edit always checks the next date")
 	}
 
 	set := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
-	if set["end"] && set["no-end"] {
-		return usagef("give --end or --no-end, not both")
-	}
 	var ch plan.Change
 	if set["desc"] {
 		ch.Description = desc
 	}
-	if set["amount"] {
-		cents, err := plan.ParseCents(*amount)
-		if err != nil {
-			return err
-		}
-		ch.Amount = &cents
-	}
-	if set["date"] {
-		d, err := c.dateOr(*dateFlag, time.Time{})
-		if err != nil {
-			return err
-		}
-		ch.Date = &d
-	}
 	if set["repeat"] {
 		ch.Recurrence = repeat
 	}
-	if set["end"] {
-		d, err := c.dateOr(*endFlag, time.Time{})
-		if err != nil {
-			return err
-		}
-		ch.End = &d
+	if ch.Amount, err = optCents(set["amount"], *amount); err != nil {
+		return err
 	}
-	if *noEnd {
-		ch.End = &time.Time{}
+	if ch.Date, err = optDate(set["date"], *dateFlag); err != nil {
+		return err
+	}
+	if ch.End, err = optEnd(set["end"], *endFlag, *noEnd); err != nil {
+		return err
 	}
 	if ch == (plan.Change{}) {
 		return usagef("nothing to change")
 	}
-	var guard *plan.Cents
-	if set["expected-amount"] {
-		cents, err := plan.ParseCents(*expectedAmount)
-		if err != nil {
-			return err
-		}
-		guard = &cents
-	}
-
-	accounts, err := c.load()
+	guard, err := optCents(set["expected-amount"], *expectedAmount)
 	if err != nil {
 		return err
 	}
-	a, err := c.pick(accounts, *account)
+
+	accounts, a, err := c.pick(*account)
 	if err != nil {
 		return err
 	}
@@ -523,11 +545,7 @@ func aheadCmd(c *ctx, args []string) error {
 	if err != nil {
 		return err
 	}
-	accounts, err := c.load()
-	if err != nil {
-		return err
-	}
-	a, err := c.pick(accounts, *account)
+	_, a, err := c.pick(*account)
 	if err != nil {
 		return err
 	}
@@ -535,6 +553,20 @@ func aheadCmd(c *ctx, args []string) error {
 	if err != nil {
 		return err
 	}
+	out := daysJSON(days)
+	low := lowOf(days)
+	v := map[string]any{
+		"account": a.Name, "balance": a.Balance.String(), "as_of": day(a.AsOf), "through": day(through),
+		"days": out, "low": low,
+	}
+	return c.output(v, func(w io.Writer) {
+		fmt.Fprintf(w, "%s: %s as of %s, through %s\n\n", a.Name, a.Balance, day(a.AsOf), day(through))
+		writeDays(w, out)
+		fmt.Fprintf(w, "\nlow %s on %s\n", low.Balance, low.Date)
+	})
+}
+
+func daysJSON(days []plan.Day) []dayJSON {
 	var out []dayJSON
 	for _, d := range days {
 		dj := dayJSON{Date: day(d.Date), Balance: d.Balance.String(), Rows: []rowJSON{}}
@@ -543,39 +575,51 @@ func aheadCmd(c *ctx, args []string) error {
 		}
 		out = append(out, dj)
 	}
-	low := lowOf(days)
-	v := map[string]any{
-		"account": a.Name, "balance": a.Balance.String(), "as_of": day(a.AsOf), "through": day(through),
-		"days": out, "low": low,
+	return out
+}
+
+func writeDays(w io.Writer, days []dayJSON) {
+	idW, descW := 0, 0
+	for _, d := range days {
+		for _, r := range d.Rows {
+			idW, descW = max(idW, len(r.ID)), max(descW, len(r.Description))
+		}
 	}
-	return c.output(v, func(w io.Writer) {
-		fmt.Fprintf(w, "%s: %s as of %s, through %s\n\n", a.Name, a.Balance, day(a.AsOf), day(through))
-		idW, descW := 0, 0
-		for _, d := range out {
-			for _, r := range d.Rows {
-				idW, descW = max(idW, len(r.ID)), max(descW, len(r.Description))
-			}
+	for _, d := range days {
+		if len(d.Rows) == 0 {
+			fmt.Fprintf(w, "%s  %-*s  %-*s  %10s  %10s\n", d.Date, idW, "", descW, "", "", d.Balance)
 		}
-		for _, d := range out {
-			if len(d.Rows) == 0 {
-				fmt.Fprintf(w, "%s  %-*s  %-*s  %10s  %10s\n", d.Date, idW, "", descW, "", "", d.Balance)
+		for i, r := range d.Rows {
+			balance := ""
+			if i == len(d.Rows)-1 {
+				balance = d.Balance
 			}
-			for i, r := range d.Rows {
-				balance := ""
-				if i == len(d.Rows)-1 {
-					balance = d.Balance
-				}
-				fmt.Fprintf(w, "%s  %-*s  %-*s  %10s  %10s\n", d.Date, idW, r.ID, descW, r.Description, r.Amount, balance)
-			}
+			fmt.Fprintf(w, "%s  %-*s  %-*s  %10s  %10s\n", d.Date, idW, r.ID, descW, r.Description, r.Amount, balance)
 		}
-		fmt.Fprintf(w, "\nlow %s on %s\n", low.Balance, low.Date)
-	})
+	}
 }
 
 type nextJSON struct {
 	ID       string  `json:"id"`
 	Cleared  bool    `json:"cleared"`
 	NextDate *string `json:"next_date"`
+}
+
+// parseRefs also returns each distinct id once, in order, for reporting.
+func parseRefs(args []string) ([]plan.Ref, []string, error) {
+	var refs []plan.Ref
+	var ids []string
+	for _, arg := range args {
+		ref, err := parseRef(arg)
+		if err != nil {
+			return nil, nil, err
+		}
+		refs = append(refs, ref)
+		if !slices.Contains(ids, ref.ID) {
+			ids = append(ids, ref.ID)
+		}
+	}
+	return refs, ids, nil
 }
 
 func advanceCmd(c *ctx, args []string, verb string) error {
@@ -588,23 +632,11 @@ func advanceCmd(c *ctx, args []string, verb string) error {
 	if len(positional) == 0 {
 		return usagef("name at least one item, as ID or ID@EXPECTED-DATE")
 	}
-	var refs []plan.Ref
-	var ids []string
-	for _, p := range positional {
-		ref, err := parseRef(p)
-		if err != nil {
-			return err
-		}
-		refs = append(refs, ref)
-		if !slices.Contains(ids, ref.ID) {
-			ids = append(ids, ref.ID)
-		}
-	}
-	accounts, err := c.load()
+	refs, ids, err := parseRefs(positional)
 	if err != nil {
 		return err
 	}
-	a, err := c.pick(accounts, *account)
+	accounts, a, err := c.pick(*account)
 	if err != nil {
 		return err
 	}
@@ -673,11 +705,7 @@ func affordCmd(c *ctx, args []string) error {
 	if err != nil {
 		return err
 	}
-	accounts, err := c.load()
-	if err != nil {
-		return err
-	}
-	a, err := c.pick(accounts, *account)
+	_, a, err := c.pick(*account)
 	if err != nil {
 		return err
 	}

@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -149,8 +150,10 @@ func TestAddCreatesItemWithReadableID(t *testing.T) {
 		"date":"2026-11-20","repeat":"every 6 months","end":null}}`)
 	items := load(t, dir)[0].Items
 	got := items[len(items)-1]
-	want := plan.Item{ID: "car-insurance", Description: "Car Insurance", Amount: -12050,
-		Date: date("2026-11-20"), Origin: date("2026-11-20"), Recurrence: "every 6 months"}
+	want := plan.Item{
+		ID: "car-insurance", Description: "Car Insurance", Amount: -12050,
+		Date: date("2026-11-20"), Origin: date("2026-11-20"), Recurrence: "every 6 months",
+	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %+v\nwant %+v", got, want)
 	}
@@ -382,5 +385,20 @@ func TestAddRefusesDuplicateUnlessAllowed(t *testing.T) {
 	r := ok(t, plim(t, dir, append(rent, "--allow-duplicate")...))
 	if !strings.Contains(r.out, "rent-2") || len(load(t, dir)[0].Items) != 4 {
 		t.Errorf("want rent-2 added, got %s", r.out)
+	}
+}
+
+type brokenPipe struct{}
+
+func (brokenPipe) Write([]byte) (int, error) { return 0, errors.New("broken pipe") }
+
+func TestFailedStdoutWriteExitsNonZero(t *testing.T) {
+	var errOut bytes.Buffer
+	app := &App{Stdout: brokenPipe{}, Stderr: &errOut, Today: today}
+
+	code := app.Run([]string{"--dir", seed(t, checking()), "ahead"})
+
+	if code != 1 || !strings.Contains(errOut.String(), "broken pipe") {
+		t.Errorf("exit %d, stderr %q", code, errOut.String())
 	}
 }

@@ -29,6 +29,12 @@ accounts.sup  {name, balance_cents, as_of}
 items.sup     {id, account, description, amount_cents, date, origin, end, recurrence}
 ```
 
+## Development
+
+`make check` runs everything CI runs: golangci-lint (`.golangci.yml`),
+`go test -race`, and govulncheck. Tool versions are pinned in the
+`Makefile` and installed into `bin/` on first use. `make fmt` formats.
+
 Status: early. The recurrence engine and forecast are ported from Cashew,
 a Rails app from 2013.
 

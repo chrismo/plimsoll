@@ -26,10 +26,14 @@ func sample() []plan.Account {
 			Balance: 123456,
 			AsOf:    date("2026-03-02"),
 			Items: []plan.Item{
-				{ID: "rent", Description: "Rent", Amount: -150000, Date: date("2026-03-31"),
-					Origin: date("2026-01-31"), Recurrence: "monthly"},
-				{ID: "gym", Description: "Gym", Amount: -2500, Date: date("2026-03-05"),
-					Origin: date("2026-03-05"), End: date("2026-12-31"), Recurrence: "every 2 weeks"},
+				{
+					ID: "rent", Description: "Rent", Amount: -150000, Date: date("2026-03-31"),
+					Origin: date("2026-01-31"), Recurrence: "monthly",
+				},
+				{
+					ID: "gym", Description: "Gym", Amount: -2500, Date: date("2026-03-05"),
+					Origin: date("2026-03-05"), End: date("2026-12-31"), Recurrence: "every 2 weeks",
+				},
 			},
 		},
 		{Name: "savings", Balance: 500000, AsOf: date("2026-03-01")},
@@ -159,7 +163,6 @@ func TestLoadHandWrittenRecords(t *testing.T) {
 	write(t, dir, "items.sup", `{recurrence:"once",date:"2026-03-09",id:"x",account:"checking",description:"Dentist",amount_cents:-4000}`+"\n")
 
 	got, err := Load(dir)
-
 	if err != nil {
 		t.Fatal(err)
 	}

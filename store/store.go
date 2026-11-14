@@ -3,7 +3,7 @@
 package store
 
 import (
-	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -11,10 +11,11 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/chrismo/plimsoll/plan"
-	"github.com/chrismo/plimsoll/recur"
 	"github.com/superdb/super"
 	"github.com/superdb/super/sio/supio"
+
+	"github.com/chrismo/plimsoll/plan"
+	"github.com/chrismo/plimsoll/recur"
 )
 
 const (
@@ -154,15 +155,14 @@ func Save(dir string, accounts []plan.Account) error {
 }
 
 func readTable[T any](path string, out *[]T) error {
-	f, err := os.Open(path)
+	data, err := os.ReadFile(path) //nolint:gosec // path is in the data folder the user chose
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	r := supio.NewReader(super.NewContext(), bufio.NewReader(f))
+	r := supio.NewReader(super.NewContext(), bytes.NewReader(data))
 	for {
 		val, err := r.Read()
 		if err != nil {
@@ -184,15 +184,17 @@ func writeTable(path string, recs []any) error {
 	if err != nil {
 		return err
 	}
-	defer os.Remove(tmp.Name())
 	err = writeRecords(tmp, recs)
 	if closeErr := tmp.Close(); err == nil {
 		err = closeErr
 	}
-	if err != nil {
-		return err
+	if err == nil {
+		err = os.Rename(tmp.Name(), path)
 	}
-	return os.Rename(tmp.Name(), path)
+	if err != nil {
+		_ = os.Remove(tmp.Name())
+	}
+	return err
 }
 
 func writeRecords(f *os.File, recs []any) error {
